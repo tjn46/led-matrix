@@ -46,7 +46,7 @@ wifi.radio.connect(secrets["ssid"], secrets["password"])
 pool = socketpool.SocketPool(wifi.radio)
 requests = adafruit_requests.Session(pool)
 
-ntp = adafruit_ntp.NTP(pool, tz_offset=-5)  # EST
+ntp = adafruit_ntp.NTP(pool, tz_offset=0)
 
 # PALETTE
 palette = displayio.Palette(8)
@@ -111,28 +111,61 @@ temp_label.anchored_position = (31, 0)
 group.append(temp_label)
 
 def get_weather():
-    url = "http://api.openweathermap.org/data/2.5/weather?q={}&units=imperial&appid={}".format(
-        secrets["openweather_location"],
+    location = secrets["openweather_location"].replace(" ", "%20")
+    url = "https://api.openweathermap.org/data/2.5/weather?q={}&units=imperial&appid={}".format(
+        location,
         secrets["openweather_token"]
     )
     response = requests.get(url)
-    data = response.json()
-    response.close()
-    return int(data["main"]["temp"])
+    try:
+        data = response.json()
+    finally:
+        response.close()
+    return int(round(data["main"]["temp"]))
+
+def is_new_york_dst(utc_time):
+    # CircuitPython uses Monday=0; U.S. DST changes at 07:00 UTC in March and 06:00 UTC in November.
+    month = utc_time.tm_mon
+    if 3 < month < 11:
+        return True
+    if month < 3 or month > 11:
+        return False
+
+    first_day_weekday = (
+        utc_time.tm_wday - ((utc_time.tm_mday - 1) % 7)
+    ) % 7
+    first_sunday = 1 + ((6 - first_day_weekday) % 7)
+
+    if month == 3:
+        second_sunday = first_sunday + 7
+        return utc_time.tm_mday > second_sunday or (
+            utc_time.tm_mday == second_sunday and utc_time.tm_hour >= 7
+        )
+
+    return utc_time.tm_mday < first_sunday or (
+        utc_time.tm_mday == first_sunday and utc_time.tm_hour < 6
+    )
+
+def format_new_york_time(utc_time):
+    offset = -4 if is_new_york_dst(utc_time) else -5
+    hour = (utc_time.tm_hour + offset) % 24
+    return "{:02d}:{:02d}".format(hour, utc_time.tm_min)
 
 # INITIAL DRAW
 draw_sprite(boy, 2, 14)
 draw_sprite(girl, 12, 14)
 draw_sprite(cat, 22, 16)
 
-temperature = get_weather()
-
+next_update = time.monotonic()
 while True:
     current_time = ntp.datetime
-    hour = current_time.tm_hour
-    minute = current_time.tm_min
-
-    time_label.text = "{:02d}:{:02d}".format(hour, minute)
+    time_label.text = format_new_york_time(current_time)
+    temperature = get_weather()
     temp_label.text = "{}F".format(temperature)
 
-    time.sleep(30)
+    next_update += 30
+    delay = next_update - time.monotonic()
+    if delay > 0:
+        time.sleep(delay)
+    else:
+        next_update = time.monotonic()
